@@ -13,28 +13,36 @@ const GROUP_MAP = {
   'lakes-entrance-2027': '190871433323218340',
 };
 
+// Parse application/x-www-form-urlencoded body
+function parseFormBody(body) {
+  const params = {};
+  const pairs = body.split('&');
+  for (const pair of pairs) {
+    const idx = pair.indexOf('=');
+    if (idx === -1) continue;
+    const key = decodeURIComponent(pair.slice(0, idx).replace(/\+/g, ' '));
+    const val = decodeURIComponent(pair.slice(idx + 1).replace(/\+/g, ' '));
+    params[key] = val;
+  }
+  return params;
+}
+
 exports.handler = async (event) => {
 
-  // Log every incoming request for debugging
   console.log('=== INCOMING REQUEST ===');
   console.log('Method:', event.httpMethod);
   console.log('Query params:', JSON.stringify(event.queryStringParameters));
-  console.log('Headers:', JSON.stringify(event.headers));
-  console.log('Body:', event.body);
+  console.log('Content-Type:', event.headers['content-type']);
 
-  // Only accept POST
   if (event.httpMethod !== 'POST') {
-    console.log('Rejected: not a POST');
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
-  // Check MailerLite API key is set
   if (!MAILERLITE_API_KEY) {
     console.error('MAILERLITE_API_KEY env var is not set!');
     return { statusCode: 500, body: 'Server misconfiguration: missing MailerLite API key' };
   }
 
-  // Get event slug from query param e.g. ?event=shepparton-2026
   const params = event.queryStringParameters || {};
   const eventSlug = params.event;
 
@@ -46,47 +54,46 @@ exports.handler = async (event) => {
   const groupId = GROUP_MAP[eventSlug];
   if (!groupId) {
     console.error(`Unknown event slug: ${eventSlug}`);
-    return { statusCode: 400, body: `Unknown event slug: ${eventSlug}. Valid slugs: ${Object.keys(GROUP_MAP).join(', ')}` };
+    return { statusCode: 400, body: `Unknown event slug: ${eventSlug}` };
   }
 
   console.log(`Event slug: ${eventSlug} → Group ID: ${groupId}`);
 
-  // Parse Race Roster payload
+  // Parse form-encoded body (Race Roster sends application/x-www-form-urlencoded)
   let data;
   try {
-    data = JSON.parse(event.body);
+    data = parseFormBody(event.body);
     console.log('Parsed payload:', JSON.stringify(data));
   } catch (err) {
-    console.error('Failed to parse JSON body:', event.body);
-    return { statusCode: 400, body: 'Invalid JSON payload' };
+    console.error('Failed to parse body:', err.message);
+    return { statusCode: 400, body: 'Failed to parse request body' };
   }
 
-  // Extract fields — log what we find
   const email     = data.email || data.participant_email;
-  const firstName = data.first_name || data.firstname || data.first_name_official || '';
-  const lastName  = data.last_name  || data.lastname  || data.last_name_official  || '';
+  const firstName = data.first_name || data.firstname || '';
+  const lastName  = data.last_name  || data.lastname  || '';
   const phone     = data.phone || data.phone_number || '';
   const city      = data.city || '';
   const country   = data.country || '';
-  const gender    = data.gender || '';
+  const gender    = data.sex || data.gender || '';
+  const distance  = data.distance_of_sub_event || data.sub_event || '';
 
-  console.log(`Extracted → email: ${email}, name: ${firstName} ${lastName}`);
+  console.log(`Extracted → email: ${email}, name: ${firstName} ${lastName}, distance: ${distance}`);
 
   if (!email) {
-    console.error('No email found in payload. Full payload was:', JSON.stringify(data));
+    console.error('No email found in payload');
     return { statusCode: 400, body: 'No email found in payload' };
   }
 
-  // Build MailerLite subscriber payload
   const subscriberPayload = {
     email,
     fields: {
       name:      firstName,
       last_name: lastName,
-      ...(phone   && { phone }),
-      ...(city    && { city }),
-      ...(country && { country }),
-      ...(gender  && { gender }),
+      ...(phone    && { phone }),
+      ...(city     && { city }),
+      ...(country  && { country }),
+      ...(gender   && { gender }),
     },
     groups: [groupId],
     status: 'active',
@@ -114,7 +121,7 @@ exports.handler = async (event) => {
       return { statusCode: 502, body: `MailerLite error: ${JSON.stringify(result)}` };
     }
 
-    console.log(`SUCCESS: Synced ${email} to group ${eventSlug} (${groupId})`);
+    console.log(`SUCCESS: Synced ${email} → ${eventSlug} (${groupId})`);
     return {
       statusCode: 200,
       body: JSON.stringify({ success: true, email, group: eventSlug }),
